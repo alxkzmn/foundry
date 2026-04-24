@@ -28,5 +28,5 @@ p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "c38eb05" }
 revm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-spartan-whir = { path = "../../../../spartan-whir" }
+spartan-whir = { path = "../../../spartan-whir" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
