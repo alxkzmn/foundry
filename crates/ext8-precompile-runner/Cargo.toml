@@ -1,0 +1,32 @@
+[package]
+name = "ext8-precompile-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "calibrate-ext8-precompile-gas"
+path = "src/bin/calibrate_ext8_precompile_gas.rs"
+
+[[bin]]
+name = "export-ext8-precompile-vectors"
+path = "src/bin/export_ext8_precompile_vectors.rs"
+
+[[bin]]
+name = "ext8-precompile-node"
+path = "src/bin/ext8_precompile_node.rs"
+
+[dependencies]
+alloy-evm.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+anvil = { path = "../anvil", default-features = false }
+anyhow = "1"
+hex = "0.4"
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "c38eb05" }
+revm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+spartan-whir = { path = "../../../../spartan-whir" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
