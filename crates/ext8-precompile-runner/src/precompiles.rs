@@ -5,7 +5,6 @@ use alloy_primitives::Bytes;
 use anvil::PrecompileFactory;
 use p3_field::PrimeCharacteristicRing;
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use spartan_whir::engine::{OcticBinExtension, F};
 
 use crate::{
     addresses::{
@@ -15,6 +14,7 @@ use crate::{
         NOOP_BATCH_64_TO_32_ADDRESS,
     },
     codec::{decode_packed_ext8_word, encode_packed_ext8_word, KOALABEAR_MODULUS},
+    field_types::{OcticBinExtension, F},
     gas_model::LockedGasSchedule,
 };
 

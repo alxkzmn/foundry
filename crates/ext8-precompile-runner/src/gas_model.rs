@@ -8,9 +8,11 @@ use std::{
 use anyhow::Context;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use serde::{Deserialize, Serialize};
-use spartan_whir::engine::{OcticBinExtension, F};
 
-use crate::vectors::{random_octic_pairs, VECTOR_SEED};
+use crate::{
+    field_types::{OcticBinExtension, F},
+    vectors::{random_octic_pairs, VECTOR_SEED},
+};
 
 pub const EIP1108_GAS_PER_MICROSECOND: f64 = 25.86;
 pub const SAFETY_MULTIPLIER: f64 = 8.0;

@@ -1,7 +1,8 @@
 use alloy_primitives::U256;
 use anyhow::ensure;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField32};
-use spartan_whir::engine::{OcticBinExtension, F};
+
+use crate::field_types::{OcticBinExtension, F};
 
 pub const KOALABEAR_MODULUS: u32 = 0x7f00_0001;
 

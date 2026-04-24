@@ -5,9 +5,11 @@ use alloy_sol_types::{sol, SolValue};
 use anyhow::Context;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField32};
 use serde::{Deserialize, Serialize};
-use spartan_whir::engine::{OcticBinExtension, F};
 
-use crate::codec::{encode_hex_word, encode_packed_ext8_word};
+use crate::{
+    codec::{encode_hex_word, encode_packed_ext8_word},
+    field_types::{OcticBinExtension, F},
+};
 
 pub const VECTOR_SEED: u64 = 0xE8C0_5A71_1234_5678;
 pub const DEFAULT_VECTOR_COUNT: usize = 10_000;
