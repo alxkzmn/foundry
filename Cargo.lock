@@ -4075,6 +4075,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext5-precompile-runner"
+version = "0.1.0"
+dependencies = [
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "anvil",
+ "anyhow",
+ "hex",
+ "p3-field",
+ "p3-koala-bear",
+ "revm",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ext8-precompile-runner"
 version = "0.1.0"
 dependencies = [

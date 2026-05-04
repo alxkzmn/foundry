@@ -14,6 +14,7 @@ members = [
     "crates/config/",
     "crates/debugger/",
     "crates/doc/",
+    "crates/ext5-precompile-runner/",
     "crates/ext8-precompile-runner/",
     "crates/evm/core/",
     "crates/evm/coverage/",

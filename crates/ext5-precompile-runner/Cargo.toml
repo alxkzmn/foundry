@@ -1,0 +1,32 @@
+[package]
+name = "ext5-precompile-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "calibrate-ext5-precompile-gas"
+path = "src/bin/calibrate_ext5_precompile_gas.rs"
+
+[[bin]]
+name = "export-ext5-precompile-vectors"
+path = "src/bin/export_ext5_precompile_vectors.rs"
+
+[[bin]]
+name = "ext5-precompile-node"
+path = "src/bin/ext5_precompile_node.rs"
+
+[dependencies]
+alloy-evm.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+anvil = { path = "../anvil", default-features = false }
+anyhow = "1"
+hex = "0.4"
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "c38eb05" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3.git", rev = "c38eb05" }
+revm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
