@@ -10,6 +10,7 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    addresses::EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5,
     field_types::{QuinticTrinomialExtension, F},
     vectors::{random_quintic_pairs, VECTOR_SEED},
 };
@@ -20,7 +21,6 @@ pub const MIN_REALISTIC_EFFECTIVE_GAS: u64 = 700;
 pub const ROUND_TO_GAS: u64 = 50;
 pub const BENCH_SAMPLES: usize = 101;
 pub const OPS_PER_SAMPLE: usize = 1024;
-pub const EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5: u16 = 0x0005;
 pub const EXTFIELD_MAC_N_MAX: usize = 1024;
 pub const EXTFIELD_MAC_CALIBRATION_NS: [usize; 5] = [0, 1, 16, 64, EXTFIELD_MAC_N_MAX];
 
