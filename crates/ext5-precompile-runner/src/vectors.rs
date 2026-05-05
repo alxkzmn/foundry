@@ -13,6 +13,8 @@ use crate::{
 
 pub const VECTOR_SEED: u64 = 0xE8C0_5A71_1234_5678;
 pub const DEFAULT_VECTOR_COUNT: usize = 10_000;
+pub const DEFAULT_MAC_VECTOR_REPEATS: usize = 16;
+pub const MAC_VECTOR_LENGTHS: [usize; 4] = [0, 1, 16, 64];
 
 #[derive(Debug, Clone, Copy)]
 struct XorShift64 {
@@ -60,6 +62,24 @@ pub struct Ext5ArithmeticVectorFile {
     pub seed: u64,
     pub count: usize,
     pub vectors: Vec<Ext5ArithmeticVector>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacVector {
+    pub n: usize,
+    pub include_accumulator: bool,
+    pub packed_accumulator: String,
+    pub packed_a: Vec<String>,
+    pub packed_b: Vec<String>,
+    pub packed_output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacVectorFile {
+    pub seed: u64,
+    pub repeats: usize,
+    pub lengths: Vec<usize>,
+    pub vectors: Vec<ExtfieldMacVector>,
 }
 
 sol! {
@@ -156,6 +176,55 @@ pub fn write_vector_outputs(out_dir: &Path, count: usize) -> anyhow::Result<()> 
     };
     fs::write(&abi_path, abi.abi_encode())
         .with_context(|| format!("failed to write {}", abi_path.display()))?;
+    Ok(())
+}
+
+pub fn generate_extfield_mac_vectors(repeats: usize) -> ExtfieldMacVectorFile {
+    let mut rng = XorShift64::new(VECTOR_SEED ^ 0xA7AC_D017_5EED_0005);
+    let mut vectors = Vec::with_capacity(MAC_VECTOR_LENGTHS.len() * 2 * repeats);
+    for n in MAC_VECTOR_LENGTHS {
+        for include_accumulator in [false, true] {
+            for _ in 0..repeats {
+                let accumulator = if include_accumulator {
+                    rng.next_quintic()
+                } else {
+                    QuinticTrinomialExtension::ZERO
+                };
+                let mut acc = accumulator;
+                let mut packed_a = Vec::with_capacity(n);
+                let mut packed_b = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let a = rng.next_quintic();
+                    let b = rng.next_quintic();
+                    acc += a * b;
+                    packed_a.push(encode_hex_word(&encode_packed_ext5_word(&a)));
+                    packed_b.push(encode_hex_word(&encode_packed_ext5_word(&b)));
+                }
+                vectors.push(ExtfieldMacVector {
+                    n,
+                    include_accumulator,
+                    packed_accumulator: encode_hex_word(&encode_packed_ext5_word(&accumulator)),
+                    packed_a,
+                    packed_b,
+                    packed_output: encode_hex_word(&encode_packed_ext5_word(&acc)),
+                });
+            }
+        }
+    }
+    ExtfieldMacVectorFile {
+        seed: VECTOR_SEED,
+        repeats,
+        lengths: MAC_VECTOR_LENGTHS.to_vec(),
+        vectors,
+    }
+}
+
+pub fn write_mac_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
+    let file = generate_extfield_mac_vectors(repeats);
+    let json_path = out_dir.join("extfield_mac_vectors.json");
+    let encoded = serde_json::to_vec_pretty(&file)?;
+    fs::write(&json_path, encoded)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
     Ok(())
 }
 

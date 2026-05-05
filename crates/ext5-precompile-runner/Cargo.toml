@@ -14,6 +14,14 @@ name = "export-ext5-precompile-vectors"
 path = "src/bin/export_ext5_precompile_vectors.rs"
 
 [[bin]]
+name = "calibrate-extfield-mac-gas"
+path = "src/bin/calibrate_extfield_mac_gas.rs"
+
+[[bin]]
+name = "export-extfield-mac-vectors"
+path = "src/bin/export_extfield_mac_vectors.rs"
+
+[[bin]]
 name = "ext5-precompile-node"
 path = "src/bin/ext5_precompile_node.rs"
 

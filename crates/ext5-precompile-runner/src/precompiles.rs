@@ -10,15 +10,16 @@ use crate::{
     addresses::{
         EXT5_ADD_ADDRESS, EXT5_MUL_ADDRESS, EXT5_MUL_BASE_ADDRESS, EXT5_MUL_BASE_BATCH_ADDRESS,
         EXT5_MUL_BATCH_ADDRESS, EXT5_SQUARE_ADDRESS, EXT5_SQUARE_BATCH_ADDRESS, EXT5_SUB_ADDRESS,
-        NOOP_32_TO_32_ADDRESS, NOOP_64_TO_32_ADDRESS, NOOP_BATCH_32_TO_32_ADDRESS,
-        NOOP_BATCH_64_TO_32_ADDRESS,
+        EXTFIELD_MAC_ADDRESS, NOOP_32_TO_32_ADDRESS, NOOP_64_TO_32_ADDRESS,
+        NOOP_BATCH_32_TO_32_ADDRESS, NOOP_BATCH_64_TO_32_ADDRESS, NOOP_EXTFIELD_MAC_ADDRESS,
     },
     codec::{decode_packed_ext5_word, encode_packed_ext5_word, KOALABEAR_MODULUS},
     field_types::{QuinticTrinomialExtension, F},
-    gas_model::LockedGasSchedule,
+    gas_model::{ExtfieldMacGasSchedule, LockedGasSchedule},
 };
 
 static LOCKED_GAS_SCHEDULE: OnceLock<LockedGasSchedule> = OnceLock::new();
+static LOCKED_MAC_GAS_SCHEDULE: OnceLock<ExtfieldMacGasSchedule> = OnceLock::new();
 
 pub fn install_locked_gas_schedule(schedule: LockedGasSchedule) -> anyhow::Result<()> {
     LOCKED_GAS_SCHEDULE
@@ -26,10 +27,22 @@ pub fn install_locked_gas_schedule(schedule: LockedGasSchedule) -> anyhow::Resul
         .map_err(|_| anyhow::anyhow!("locked gas schedule already installed"))
 }
 
+pub fn install_locked_mac_gas_schedule(schedule: ExtfieldMacGasSchedule) -> anyhow::Result<()> {
+    LOCKED_MAC_GAS_SCHEDULE
+        .set(schedule)
+        .map_err(|_| anyhow::anyhow!("locked MAC gas schedule already installed"))
+}
+
 fn locked_gas_schedule() -> &'static LockedGasSchedule {
     LOCKED_GAS_SCHEDULE
         .get()
         .expect("locked gas schedule must be installed before spawning the node")
+}
+
+fn locked_mac_gas_schedule() -> &'static ExtfieldMacGasSchedule {
+    LOCKED_MAC_GAS_SCHEDULE
+        .get()
+        .expect("locked MAC gas schedule must be installed before spawning the node")
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -46,10 +59,12 @@ impl PrecompileFactory for Ext5PrecompileFactory {
             (EXT5_MUL_BATCH_ADDRESS, DynPrecompile::from(ext5_mul_batch_precompile)),
             (EXT5_SQUARE_BATCH_ADDRESS, DynPrecompile::from(ext5_square_batch_precompile)),
             (EXT5_MUL_BASE_BATCH_ADDRESS, DynPrecompile::from(ext5_mul_base_batch_precompile)),
+            (EXTFIELD_MAC_ADDRESS, DynPrecompile::from(extfield_mac_precompile)),
             (NOOP_64_TO_32_ADDRESS, DynPrecompile::from(noop_64_to_32_precompile)),
             (NOOP_32_TO_32_ADDRESS, DynPrecompile::from(noop_32_to_32_precompile)),
             (NOOP_BATCH_64_TO_32_ADDRESS, DynPrecompile::from(noop_batch_64_to_32_precompile)),
             (NOOP_BATCH_32_TO_32_ADDRESS, DynPrecompile::from(noop_batch_32_to_32_precompile)),
+            (NOOP_EXTFIELD_MAC_ADDRESS, DynPrecompile::from(noop_extfield_mac_precompile)),
         ]
     }
 }
@@ -159,6 +174,28 @@ fn ext5_mul_base_batch_precompile(input: PrecompileInput<'_>) -> PrecompileResul
     )
 }
 
+fn extfield_mac_precompile(input: PrecompileInput<'_>) -> PrecompileResult {
+    let schedule = locked_mac_gas_schedule();
+    let request = parse_mac_header(input.data, schedule)?;
+    let mut offset = 8usize;
+    let mut acc = QuinticTrinomialExtension::ZERO;
+    if request.has_accumulator {
+        acc = decode_word(input.data, offset)?;
+        offset += 32;
+    }
+    for _ in 0..request.n {
+        let lhs = decode_word(input.data, offset)?;
+        let rhs = decode_word(input.data, offset + 32)?;
+        acc += lhs * rhs;
+        offset += 64;
+    }
+    output_word(
+        acc,
+        schedule.extfield_mac.assigned_base_gas
+            + schedule.extfield_mac.assigned_per_pair_gas * request.n as u64,
+    )
+}
+
 fn noop_64_to_32_precompile(input: PrecompileInput<'_>) -> PrecompileResult {
     let mut out = [0_u8; 32];
     let take = input.data.len().min(32);
@@ -199,6 +236,45 @@ fn noop_batch_32_to_32_precompile(input: PrecompileInput<'_>) -> PrecompileResul
         return Err(PrecompileError::other_static("NOOP_BATCH_32_TO_32 expects 32 bytes per item"));
     }
     output_bytes(input.data.to_vec(), 0)
+}
+
+fn noop_extfield_mac_precompile(input: PrecompileInput<'_>) -> PrecompileResult {
+    let schedule = locked_mac_gas_schedule();
+    let _ = parse_mac_header(input.data, schedule)?;
+    output_bytes(vec![0_u8; 32], 0)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MacRequest {
+    n: usize,
+    has_accumulator: bool,
+}
+
+fn parse_mac_header(
+    input: &[u8],
+    schedule: &ExtfieldMacGasSchedule,
+) -> Result<MacRequest, PrecompileError> {
+    if input.len() < 8 {
+        return Err(PrecompileError::other_static("EXTFIELD_MAC input is shorter than header"));
+    }
+    let field_id = u16::from_be_bytes(input[0..2].try_into().unwrap());
+    if field_id != schedule.field_id {
+        return Err(PrecompileError::other_static("EXTFIELD_MAC unknown field_id"));
+    }
+    let n = u16::from_be_bytes(input[2..4].try_into().unwrap()) as usize;
+    if n > schedule.n_max {
+        return Err(PrecompileError::other_static("EXTFIELD_MAC n exceeds configured maximum"));
+    }
+    let flags = u32::from_be_bytes(input[4..8].try_into().unwrap());
+    if flags & !1 != 0 {
+        return Err(PrecompileError::other_static("EXTFIELD_MAC reserved flag bit set"));
+    }
+    let has_accumulator = flags & 1 != 0;
+    let expected_len = 8 + if has_accumulator { 32 } else { 0 } + 64 * n;
+    if input.len() != expected_len {
+        return Err(PrecompileError::other_static("EXTFIELD_MAC input length mismatch"));
+    }
+    Ok(MacRequest { n, has_accumulator })
 }
 
 fn decode_word(input: &[u8], offset: usize) -> Result<QuinticTrinomialExtension, PrecompileError> {

@@ -18,6 +18,8 @@ snapshots/
 node_modules
 dist
 bin
+!crates/*/src/bin/
+!crates/*/src/bin/*.rs
 _
 *.tgz
 .vercel
