@@ -17,17 +17,19 @@ fn main() -> anyhow::Result<()> {
     schedule.write_json(&out_path)?;
 
     println!("wrote {}", out_path.display());
-    println!("field_id: {}", schedule.field_id);
-    println!("n_max: {}", schedule.n_max);
-    println!(
-        "extfield_mac assigned gas: base={} per_pair={}",
-        schedule.extfield_mac.assigned_base_gas, schedule.extfield_mac.assigned_per_pair_gas
-    );
-    for sample in &schedule.extfield_mac.samples {
+    for field in &schedule.fields {
+        println!("field_id: {}", field.field_id);
+        println!("n_max: {}", field.n_max);
         println!(
-            "n={} median runtime (ns): {} assigned gas at n: {}",
-            sample.n, sample.median_runtime_ns, sample.assigned_gas_at_n
+            "extfield_mac assigned gas: base={} per_pair={}",
+            field.extfield_mac.assigned_base_gas, field.extfield_mac.assigned_per_pair_gas
         );
+        for sample in &field.extfield_mac.samples {
+            println!(
+                "n={} median runtime (ns): {} assigned gas at n: {}",
+                sample.n, sample.median_runtime_ns, sample.assigned_gas_at_n
+            );
+        }
     }
     Ok(())
 }

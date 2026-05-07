@@ -7,8 +7,8 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, PrimeField32};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    codec::{encode_hex_word, encode_packed_ext5_word},
-    field_types::{QuinticTrinomialExtension, F},
+    codec::{encode_hex_word, encode_packed_ext5_word, encode_packed_ext8_word},
+    field_types::{OcticBinExtension, QuinticTrinomialExtension, F},
 };
 
 pub const VECTOR_SEED: u64 = 0xE8C0_5A71_1234_5678;
@@ -42,6 +42,10 @@ impl XorShift64 {
 
     fn next_quintic(&mut self) -> QuinticTrinomialExtension {
         QuinticTrinomialExtension::from_basis_coefficients_fn(|_| self.next_base_field())
+    }
+
+    fn next_octic(&mut self) -> OcticBinExtension {
+        OcticBinExtension::from_basis_coefficients_fn(|_| self.next_base_field())
     }
 }
 
@@ -100,6 +104,11 @@ pub fn random_quintic_pairs(
 ) -> Vec<(QuinticTrinomialExtension, QuinticTrinomialExtension)> {
     let mut rng = XorShift64::new(VECTOR_SEED);
     (0..count).map(|_| (rng.next_quintic(), rng.next_quintic())).collect()
+}
+
+pub fn random_octic_pairs(count: usize) -> Vec<(OcticBinExtension, OcticBinExtension)> {
+    let mut rng = XorShift64::new(VECTOR_SEED ^ 0x0C71_C0DE_0008);
+    (0..count).map(|_| (rng.next_octic(), rng.next_octic())).collect()
 }
 
 pub fn generate_ext5_arithmetic_vectors(count: usize) -> Ext5ArithmeticVectorFile {
@@ -222,6 +231,52 @@ pub fn generate_extfield_mac_vectors(repeats: usize) -> ExtfieldMacVectorFile {
 pub fn write_mac_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
     let file = generate_extfield_mac_vectors(repeats);
     let json_path = out_dir.join("extfield_mac_vectors.json");
+    let encoded = serde_json::to_vec_pretty(&file)?;
+    fs::write(&json_path, encoded)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    Ok(())
+}
+
+pub fn generate_extfield_mac_ext8_vectors(repeats: usize) -> ExtfieldMacVectorFile {
+    let mut rng = XorShift64::new(VECTOR_SEED ^ 0xA7AC_D017_5EED_0008);
+    let mut vectors = Vec::with_capacity(MAC_VECTOR_LENGTHS.len() * 2 * repeats);
+    for n in MAC_VECTOR_LENGTHS {
+        for include_accumulator in [false, true] {
+            for _ in 0..repeats {
+                let accumulator =
+                    if include_accumulator { rng.next_octic() } else { OcticBinExtension::ZERO };
+                let mut acc = accumulator;
+                let mut packed_a = Vec::with_capacity(n);
+                let mut packed_b = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let a = rng.next_octic();
+                    let b = rng.next_octic();
+                    acc += a * b;
+                    packed_a.push(encode_hex_word(&encode_packed_ext8_word(&a)));
+                    packed_b.push(encode_hex_word(&encode_packed_ext8_word(&b)));
+                }
+                vectors.push(ExtfieldMacVector {
+                    n,
+                    include_accumulator,
+                    packed_accumulator: encode_hex_word(&encode_packed_ext8_word(&accumulator)),
+                    packed_a,
+                    packed_b,
+                    packed_output: encode_hex_word(&encode_packed_ext8_word(&acc)),
+                });
+            }
+        }
+    }
+    ExtfieldMacVectorFile {
+        seed: VECTOR_SEED,
+        repeats,
+        lengths: MAC_VECTOR_LENGTHS.to_vec(),
+        vectors,
+    }
+}
+
+pub fn write_mac_ext8_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
+    let file = generate_extfield_mac_ext8_vectors(repeats);
+    let json_path = out_dir.join("extfield_mac_ext8_vectors.json");
     let encoded = serde_json::to_vec_pretty(&file)?;
     fs::write(&json_path, encoded)
         .with_context(|| format!("failed to write {}", json_path.display()))?;

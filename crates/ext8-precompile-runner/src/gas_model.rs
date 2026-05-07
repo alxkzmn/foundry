@@ -47,6 +47,40 @@ pub struct LockedGasSchedule {
     pub ext8_mul_base_batch: OperationGasModel,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacSizeSample {
+    pub n: usize,
+    pub median_runtime_ns: u64,
+    pub assigned_gas_at_n: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacGasModel {
+    pub assigned_base_gas: u64,
+    pub assigned_per_pair_gas: u64,
+    pub samples: Vec<MacSizeSample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacFieldGasSchedule {
+    pub field_id: u16,
+    pub n_max: usize,
+    pub extfield_mac: ExtfieldMacGasModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacGasSchedule {
+    pub foundry_version: String,
+    pub foundry_commit: String,
+    pub eip1108_gas_per_microsecond: f64,
+    pub safety_multiplier: f64,
+    pub min_realistic_effective_gas: u64,
+    pub samples: usize,
+    pub ops_per_sample: usize,
+    pub vector_seed: u64,
+    pub fields: Vec<ExtfieldMacFieldGasSchedule>,
+}
+
 impl LockedGasSchedule {
     pub fn from_live_benchmark() -> Self {
         let mul_median = benchmark_op_ns(|a, b| *a * *b);
@@ -111,6 +145,18 @@ impl LockedGasSchedule {
         let raw = fs::read(path)
             .with_context(|| format!("failed to read gas schedule {}", path.display()))?;
         Ok(serde_json::from_slice(&raw)?)
+    }
+}
+
+impl ExtfieldMacGasSchedule {
+    pub fn read_json(path: &Path) -> anyhow::Result<Self> {
+        let raw = fs::read(path)
+            .with_context(|| format!("failed to read MAC gas schedule {}", path.display()))?;
+        Ok(serde_json::from_slice(&raw)?)
+    }
+
+    pub fn field(&self, field_id: u16) -> Option<&ExtfieldMacFieldGasSchedule> {
+        self.fields.iter().find(|field| field.field_id == field_id)
     }
 }
 

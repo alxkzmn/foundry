@@ -42,11 +42,14 @@ async fn main() -> anyhow::Result<()> {
     println!("port: {}", port);
     println!("ext5_mul assigned base gas: {}", schedule.ext5_mul.assigned_base_gas);
     println!("ext5_square assigned base gas: {}", schedule.ext5_square.assigned_base_gas);
-    println!(
-        "extfield_mac assigned gas: base={} per_pair={}",
-        mac_schedule.extfield_mac.assigned_base_gas,
-        mac_schedule.extfield_mac.assigned_per_pair_gas
-    );
+    for field in &mac_schedule.fields {
+        println!(
+            "extfield_mac field_id={} assigned gas: base={} per_pair={}",
+            field.field_id,
+            field.extfield_mac.assigned_base_gas,
+            field.extfield_mac.assigned_per_pair_gas
+        );
+    }
 
     let config = NodeConfig::default()
         .silent()

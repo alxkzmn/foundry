@@ -10,9 +10,9 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    addresses::EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5,
-    field_types::{QuinticTrinomialExtension, F},
-    vectors::{random_quintic_pairs, VECTOR_SEED},
+    addresses::{EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5, EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8},
+    field_types::{OcticBinExtension, QuinticTrinomialExtension, F},
+    vectors::{random_octic_pairs, random_quintic_pairs, VECTOR_SEED},
 };
 
 pub const EIP1108_GAS_PER_MICROSECOND: f64 = 25.86;
@@ -65,6 +65,13 @@ pub struct ExtfieldMacGasModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldMacFieldGasSchedule {
+    pub field_id: u16,
+    pub n_max: usize,
+    pub extfield_mac: ExtfieldMacGasModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtfieldMacGasSchedule {
     pub foundry_version: String,
     pub foundry_commit: String,
@@ -74,9 +81,7 @@ pub struct ExtfieldMacGasSchedule {
     pub samples: usize,
     pub ops_per_sample: usize,
     pub vector_seed: u64,
-    pub field_id: u16,
-    pub n_max: usize,
-    pub extfield_mac: ExtfieldMacGasModel,
+    pub fields: Vec<ExtfieldMacFieldGasSchedule>,
 }
 
 impl LockedGasSchedule {
@@ -148,18 +153,6 @@ impl LockedGasSchedule {
 
 impl ExtfieldMacGasSchedule {
     pub fn from_live_benchmark() -> Self {
-        let samples = EXTFIELD_MAC_CALIBRATION_NS
-            .iter()
-            .map(|n| {
-                let median_runtime_ns = benchmark_mac_ns(*n);
-                MacSizeSample {
-                    n: *n,
-                    median_runtime_ns,
-                    assigned_gas_at_n: assigned_base_gas_from_ns(median_runtime_ns),
-                }
-            })
-            .collect::<Vec<_>>();
-        let (assigned_base_gas, assigned_per_pair_gas) = fit_mac_gas(&samples);
         Self {
             foundry_version: "1.5.1-stable".to_string(),
             foundry_commit: "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2".to_string(),
@@ -169,10 +162,15 @@ impl ExtfieldMacGasSchedule {
             samples: BENCH_SAMPLES,
             ops_per_sample: OPS_PER_SAMPLE,
             vector_seed: VECTOR_SEED,
-            field_id: EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5,
-            n_max: EXTFIELD_MAC_N_MAX,
-            extfield_mac: ExtfieldMacGasModel { assigned_base_gas, assigned_per_pair_gas, samples },
+            fields: vec![
+                benchmark_mac_field(EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5, benchmark_mac_ext5_ns),
+                benchmark_mac_field(EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8, benchmark_mac_ext8_ns),
+            ],
         }
+    }
+
+    pub fn field(&self, field_id: u16) -> Option<&ExtfieldMacFieldGasSchedule> {
+        self.fields.iter().find(|field| field.field_id == field_id)
     }
 
     pub fn write_json(&self, path: &Path) -> anyhow::Result<()> {
@@ -185,6 +183,26 @@ impl ExtfieldMacGasSchedule {
         let raw = fs::read(path)
             .with_context(|| format!("failed to read MAC gas schedule {}", path.display()))?;
         Ok(serde_json::from_slice(&raw)?)
+    }
+}
+
+fn benchmark_mac_field(field_id: u16, benchmark: fn(usize) -> u64) -> ExtfieldMacFieldGasSchedule {
+    let samples = EXTFIELD_MAC_CALIBRATION_NS
+        .iter()
+        .map(|n| {
+            let median_runtime_ns = benchmark(*n);
+            MacSizeSample {
+                n: *n,
+                median_runtime_ns,
+                assigned_gas_at_n: assigned_base_gas_from_ns(median_runtime_ns),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (assigned_base_gas, assigned_per_pair_gas) = fit_mac_gas(&samples);
+    ExtfieldMacFieldGasSchedule {
+        field_id,
+        n_max: EXTFIELD_MAC_N_MAX,
+        extfield_mac: ExtfieldMacGasModel { assigned_base_gas, assigned_per_pair_gas, samples },
     }
 }
 
@@ -298,7 +316,7 @@ fn benchmark_batch_scalar_op_ns(
     benchmark_scalar_op_ns(|a, scalar| op(a, scalar))
 }
 
-fn benchmark_mac_ns(n: usize) -> u64 {
+fn benchmark_mac_ext5_ns(n: usize) -> u64 {
     let inputs = random_quintic_pairs(n.max(1));
     let accumulator = inputs[0].0;
     let mut samples = Vec::with_capacity(BENCH_SAMPLES);
@@ -306,6 +324,30 @@ fn benchmark_mac_ns(n: usize) -> u64 {
     for _ in 0..BENCH_SAMPLES {
         let start = Instant::now();
         let mut outer_acc = QuinticTrinomialExtension::ZERO;
+        for _ in 0..OPS_PER_SAMPLE {
+            let mut acc = black_box(accumulator);
+            for (a, b) in inputs.iter().take(n) {
+                acc += black_box(*a) * black_box(*b);
+            }
+            outer_acc += black_box(acc);
+        }
+        let _ = black_box(outer_acc);
+        let elapsed = start.elapsed();
+        samples.push(ns_per_op(elapsed));
+    }
+
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+fn benchmark_mac_ext8_ns(n: usize) -> u64 {
+    let inputs = random_octic_pairs(n.max(1));
+    let accumulator = inputs[0].0;
+    let mut samples = Vec::with_capacity(BENCH_SAMPLES);
+
+    for _ in 0..BENCH_SAMPLES {
+        let start = Instant::now();
+        let mut outer_acc = OcticBinExtension::ZERO;
         for _ in 0..OPS_PER_SAMPLE {
             let mut acc = black_box(accumulator);
             for (a, b) in inputs.iter().take(n) {
