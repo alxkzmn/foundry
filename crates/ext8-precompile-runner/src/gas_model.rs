@@ -20,6 +20,9 @@ pub const MIN_REALISTIC_EFFECTIVE_GAS: u64 = 700;
 pub const ROUND_TO_GAS: u64 = 50;
 pub const BENCH_SAMPLES: usize = 101;
 pub const OPS_PER_SAMPLE: usize = 1024;
+pub const EXTFIELD_LIN_PROD_FLAG_EXPLICIT: u32 = 0;
+pub const EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA: u32 = 1;
+pub const EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationGasModel {
@@ -79,6 +82,42 @@ pub struct ExtfieldMacGasSchedule {
     pub ops_per_sample: usize,
     pub vector_seed: u64,
     pub fields: Vec<ExtfieldMacFieldGasSchedule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinProdSizeSample {
+    pub n: usize,
+    pub median_runtime_ns: u64,
+    pub assigned_gas_at_n: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdGasModel {
+    pub flags: u32,
+    pub assigned_base_gas: u64,
+    pub assigned_per_term_gas: u64,
+    pub samples: Vec<LinProdSizeSample>,
+    pub measurement_samples: Vec<LinProdSizeSample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdFieldGasSchedule {
+    pub field_id: u16,
+    pub n_max: usize,
+    pub modes: Vec<ExtfieldLinProdGasModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdGasSchedule {
+    pub foundry_version: String,
+    pub foundry_commit: String,
+    pub eip1108_gas_per_microsecond: f64,
+    pub safety_multiplier: f64,
+    pub min_realistic_effective_gas: u64,
+    pub samples: usize,
+    pub ops_per_sample: usize,
+    pub vector_seed: u64,
+    pub fields: Vec<ExtfieldLinProdFieldGasSchedule>,
 }
 
 impl LockedGasSchedule {
@@ -157,6 +196,28 @@ impl ExtfieldMacGasSchedule {
 
     pub fn field(&self, field_id: u16) -> Option<&ExtfieldMacFieldGasSchedule> {
         self.fields.iter().find(|field| field.field_id == field_id)
+    }
+}
+
+impl ExtfieldLinProdGasSchedule {
+    pub fn read_json(path: &Path) -> anyhow::Result<Self> {
+        let raw = fs::read(path)
+            .with_context(|| format!("failed to read LIN_PROD gas schedule {}", path.display()))?;
+        Ok(serde_json::from_slice(&raw)?)
+    }
+
+    pub fn field(&self, field_id: u16) -> Option<&ExtfieldLinProdFieldGasSchedule> {
+        self.fields.iter().find(|field| field.field_id == field_id)
+    }
+
+    pub fn mode(
+        &self,
+        field_id: u16,
+        flags: u32,
+    ) -> Option<(&ExtfieldLinProdFieldGasSchedule, &ExtfieldLinProdGasModel)> {
+        let field = self.field(field_id)?;
+        let mode = field.modes.iter().find(|mode| mode.flags == flags)?;
+        Some((field, mode))
     }
 }
 

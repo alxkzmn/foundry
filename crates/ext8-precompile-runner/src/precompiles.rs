@@ -10,17 +10,23 @@ use crate::{
     addresses::{
         EXT8_ADD_ADDRESS, EXT8_MUL_ADDRESS, EXT8_MUL_BASE_ADDRESS, EXT8_MUL_BASE_BATCH_ADDRESS,
         EXT8_MUL_BATCH_ADDRESS, EXT8_SQUARE_ADDRESS, EXT8_SQUARE_BATCH_ADDRESS, EXT8_SUB_ADDRESS,
-        EXTFIELD_MAC_ADDRESS, EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8, NOOP_32_TO_32_ADDRESS,
-        NOOP_64_TO_32_ADDRESS, NOOP_BATCH_32_TO_32_ADDRESS, NOOP_BATCH_64_TO_32_ADDRESS,
-        NOOP_EXTFIELD_MAC_ADDRESS,
+        EXTFIELD_LIN_PROD_ADDRESS, EXTFIELD_MAC_ADDRESS, EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8,
+        NOOP_32_TO_32_ADDRESS, NOOP_64_TO_32_ADDRESS, NOOP_BATCH_32_TO_32_ADDRESS,
+        NOOP_BATCH_64_TO_32_ADDRESS, NOOP_EXTFIELD_LIN_PROD_ADDRESS, NOOP_EXTFIELD_MAC_ADDRESS,
     },
     codec::{decode_packed_ext8_word, encode_packed_ext8_word, KOALABEAR_MODULUS},
     field_types::{OcticBinExtension, F},
-    gas_model::{ExtfieldMacFieldGasSchedule, ExtfieldMacGasSchedule, LockedGasSchedule},
+    gas_model::{
+        ExtfieldLinProdFieldGasSchedule, ExtfieldLinProdGasModel, ExtfieldLinProdGasSchedule,
+        ExtfieldMacFieldGasSchedule, ExtfieldMacGasSchedule, LockedGasSchedule,
+        EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA, EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA,
+        EXTFIELD_LIN_PROD_FLAG_EXPLICIT,
+    },
 };
 
 static LOCKED_GAS_SCHEDULE: OnceLock<LockedGasSchedule> = OnceLock::new();
 static LOCKED_MAC_GAS_SCHEDULE: OnceLock<ExtfieldMacGasSchedule> = OnceLock::new();
+static LOCKED_LIN_PROD_GAS_SCHEDULE: OnceLock<ExtfieldLinProdGasSchedule> = OnceLock::new();
 
 pub fn install_locked_gas_schedule(schedule: LockedGasSchedule) -> anyhow::Result<()> {
     LOCKED_GAS_SCHEDULE
@@ -40,10 +46,24 @@ pub fn install_locked_mac_gas_schedule(schedule: ExtfieldMacGasSchedule) -> anyh
         .map_err(|_| anyhow::anyhow!("locked MAC gas schedule already installed"))
 }
 
+pub fn install_locked_lin_prod_gas_schedule(
+    schedule: ExtfieldLinProdGasSchedule,
+) -> anyhow::Result<()> {
+    LOCKED_LIN_PROD_GAS_SCHEDULE
+        .set(schedule)
+        .map_err(|_| anyhow::anyhow!("locked LIN_PROD gas schedule already installed"))
+}
+
 fn locked_mac_gas_schedule() -> &'static ExtfieldMacGasSchedule {
     LOCKED_MAC_GAS_SCHEDULE
         .get()
         .expect("locked MAC gas schedule must be installed before spawning the node")
+}
+
+fn locked_lin_prod_gas_schedule() -> &'static ExtfieldLinProdGasSchedule {
+    LOCKED_LIN_PROD_GAS_SCHEDULE
+        .get()
+        .expect("locked LIN_PROD gas schedule must be installed before spawning the node")
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,6 +86,11 @@ impl PrecompileFactory for Ext8PrecompileFactory {
             (NOOP_BATCH_32_TO_32_ADDRESS, DynPrecompile::from(noop_batch_32_to_32_precompile)),
             (EXTFIELD_MAC_ADDRESS, DynPrecompile::from(extfield_mac_precompile)),
             (NOOP_EXTFIELD_MAC_ADDRESS, DynPrecompile::from(noop_extfield_mac_precompile)),
+            (EXTFIELD_LIN_PROD_ADDRESS, DynPrecompile::from(extfield_lin_prod_precompile)),
+            (
+                NOOP_EXTFIELD_LIN_PROD_ADDRESS,
+                DynPrecompile::from(noop_extfield_lin_prod_precompile),
+            ),
         ]
     }
 }
@@ -251,11 +276,36 @@ fn noop_extfield_mac_precompile(input: PrecompileInput<'_>) -> PrecompileResult 
     output_bytes(vec![0_u8; 32], 0)
 }
 
+fn extfield_lin_prod_precompile(input: PrecompileInput<'_>) -> PrecompileResult {
+    let schedule = locked_lin_prod_gas_schedule();
+    let request = parse_lin_prod_header(input.data, schedule)?;
+    if request.field.field_id != EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8 {
+        return Err(PrecompileError::other_static("EXTFIELD_LIN_PROD unsupported field_id"));
+    }
+    let gas_used =
+        request.mode.assigned_base_gas + request.mode.assigned_per_term_gas * request.n as u64;
+    output_word(lin_prod_ext8(input.data, request)?, gas_used)
+}
+
+fn noop_extfield_lin_prod_precompile(input: PrecompileInput<'_>) -> PrecompileResult {
+    let schedule = locked_lin_prod_gas_schedule();
+    let _ = parse_lin_prod_header(input.data, schedule)?;
+    output_bytes(vec![0_u8; 32], 0)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MacRequest<'a> {
     n: usize,
     has_accumulator: bool,
     field: &'a ExtfieldMacFieldGasSchedule,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinProdRequest<'a> {
+    n: usize,
+    flags: u32,
+    field: &'a ExtfieldLinProdFieldGasSchedule,
+    mode: &'a ExtfieldLinProdGasModel,
 }
 
 fn parse_mac_header<'a>(
@@ -285,6 +335,73 @@ fn parse_mac_header<'a>(
     Ok(MacRequest { n, has_accumulator, field })
 }
 
+fn parse_lin_prod_header<'a>(
+    input: &[u8],
+    schedule: &'a ExtfieldLinProdGasSchedule,
+) -> Result<LinProdRequest<'a>, PrecompileError> {
+    if input.len() < 8 {
+        return Err(PrecompileError::other_static(
+            "EXTFIELD_LIN_PROD input is shorter than header",
+        ));
+    }
+    let field_id = u16::from_be_bytes(input[0..2].try_into().unwrap());
+    let flags = u32::from_be_bytes(input[4..8].try_into().unwrap());
+    let Some((field, mode)) = schedule.mode(field_id, flags) else {
+        return Err(PrecompileError::other_static("EXTFIELD_LIN_PROD unknown field_id or flags"));
+    };
+    let n = u16::from_be_bytes(input[2..4].try_into().unwrap()) as usize;
+    if n > field.n_max {
+        return Err(PrecompileError::other_static(
+            "EXTFIELD_LIN_PROD n exceeds configured maximum",
+        ));
+    }
+    let bytes_per_term = match flags {
+        EXTFIELD_LIN_PROD_FLAG_EXPLICIT => 96,
+        EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA => 64,
+        EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA => 36,
+        _ => return Err(PrecompileError::other_static("EXTFIELD_LIN_PROD reserved flag bit set")),
+    };
+    let expected_len = 8 + bytes_per_term * n;
+    if input.len() != expected_len {
+        return Err(PrecompileError::other_static("EXTFIELD_LIN_PROD input length mismatch"));
+    }
+    Ok(LinProdRequest { n, flags, field, mode })
+}
+
+fn lin_prod_ext8(
+    input: &[u8],
+    request: LinProdRequest<'_>,
+) -> Result<OcticBinExtension, PrecompileError> {
+    let mut offset = 8usize;
+    let mut acc = OcticBinExtension::ONE;
+    for _ in 0..request.n {
+        let term = match request.flags {
+            EXTFIELD_LIN_PROD_FLAG_EXPLICIT => {
+                let alpha = decode_word(input, offset)?;
+                let beta = decode_word(input, offset + 32)?;
+                let x = decode_word(input, offset + 64)?;
+                offset += 96;
+                alpha + beta * x
+            }
+            EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA => {
+                let beta = decode_word(input, offset)?;
+                let x = decode_word(input, offset + 32)?;
+                offset += 64;
+                OcticBinExtension::ONE + beta * x
+            }
+            EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA => {
+                let beta = decode_scalar4(input, offset)?;
+                let x = decode_word(input, offset + 4)?;
+                offset += 36;
+                OcticBinExtension::ONE + x * beta
+            }
+            _ => unreachable!("unsupported LIN_PROD flags"),
+        };
+        acc *= term;
+    }
+    Ok(acc)
+}
+
 fn decode_word(input: &[u8], offset: usize) -> Result<OcticBinExtension, PrecompileError> {
     let mut word = [0_u8; 32];
     if input.len() > offset {
@@ -303,6 +420,17 @@ fn decode_scalar(input: &[u8], offset: usize) -> Result<F, PrecompileError> {
         return Err(PrecompileError::other_static("base scalar high bytes must be zero"));
     }
     let value = u32::from_be_bytes(input[offset + 28..offset + 32].try_into().unwrap());
+    if value >= KOALABEAR_MODULUS {
+        return Err(PrecompileError::other_static("base scalar out of range"));
+    }
+    Ok(F::from_u32(value))
+}
+
+fn decode_scalar4(input: &[u8], offset: usize) -> Result<F, PrecompileError> {
+    if input.len() < offset + 4 {
+        return Err(PrecompileError::other_static("base scalar input is truncated"));
+    }
+    let value = u32::from_be_bytes(input[offset..offset + 4].try_into().unwrap());
     if value >= KOALABEAR_MODULUS {
         return Err(PrecompileError::other_static("base scalar out of range"));
     }

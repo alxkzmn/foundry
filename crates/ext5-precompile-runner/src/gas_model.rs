@@ -23,6 +23,12 @@ pub const BENCH_SAMPLES: usize = 101;
 pub const OPS_PER_SAMPLE: usize = 1024;
 pub const EXTFIELD_MAC_N_MAX: usize = 1024;
 pub const EXTFIELD_MAC_CALIBRATION_NS: [usize; 5] = [0, 1, 16, 64, EXTFIELD_MAC_N_MAX];
+pub const EXTFIELD_LIN_PROD_N_MAX: usize = 1024;
+pub const EXTFIELD_LIN_PROD_CALIBRATION_NS: [usize; 5] = [0, 1, 16, 64, EXTFIELD_LIN_PROD_N_MAX];
+pub const EXTFIELD_LIN_PROD_MEASUREMENT_NS: [usize; 3] = [10, 14, 18];
+pub const EXTFIELD_LIN_PROD_FLAG_EXPLICIT: u32 = 0;
+pub const EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA: u32 = 1;
+pub const EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationGasModel {
@@ -82,6 +88,42 @@ pub struct ExtfieldMacGasSchedule {
     pub ops_per_sample: usize,
     pub vector_seed: u64,
     pub fields: Vec<ExtfieldMacFieldGasSchedule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinProdSizeSample {
+    pub n: usize,
+    pub median_runtime_ns: u64,
+    pub assigned_gas_at_n: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdGasModel {
+    pub flags: u32,
+    pub assigned_base_gas: u64,
+    pub assigned_per_term_gas: u64,
+    pub samples: Vec<LinProdSizeSample>,
+    pub measurement_samples: Vec<LinProdSizeSample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdFieldGasSchedule {
+    pub field_id: u16,
+    pub n_max: usize,
+    pub modes: Vec<ExtfieldLinProdGasModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdGasSchedule {
+    pub foundry_version: String,
+    pub foundry_commit: String,
+    pub eip1108_gas_per_microsecond: f64,
+    pub safety_multiplier: f64,
+    pub min_realistic_effective_gas: u64,
+    pub samples: usize,
+    pub ops_per_sample: usize,
+    pub vector_seed: u64,
+    pub fields: Vec<ExtfieldLinProdFieldGasSchedule>,
 }
 
 impl LockedGasSchedule {
@@ -186,6 +228,57 @@ impl ExtfieldMacGasSchedule {
     }
 }
 
+impl ExtfieldLinProdGasSchedule {
+    pub fn from_live_benchmark() -> Self {
+        Self {
+            foundry_version: "1.5.1-stable".to_string(),
+            foundry_commit: "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2".to_string(),
+            eip1108_gas_per_microsecond: EIP1108_GAS_PER_MICROSECOND,
+            safety_multiplier: SAFETY_MULTIPLIER,
+            min_realistic_effective_gas: MIN_REALISTIC_EFFECTIVE_GAS,
+            samples: BENCH_SAMPLES,
+            ops_per_sample: OPS_PER_SAMPLE,
+            vector_seed: VECTOR_SEED,
+            fields: vec![
+                benchmark_lin_prod_field(
+                    EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT5,
+                    benchmark_lin_prod_ext5_ns,
+                ),
+                benchmark_lin_prod_field(
+                    EXTFIELD_MAC_FIELD_ID_KOALABEAR_EXT8,
+                    benchmark_lin_prod_ext8_ns,
+                ),
+            ],
+        }
+    }
+
+    pub fn field(&self, field_id: u16) -> Option<&ExtfieldLinProdFieldGasSchedule> {
+        self.fields.iter().find(|field| field.field_id == field_id)
+    }
+
+    pub fn mode(
+        &self,
+        field_id: u16,
+        flags: u32,
+    ) -> Option<(&ExtfieldLinProdFieldGasSchedule, &ExtfieldLinProdGasModel)> {
+        let field = self.field(field_id)?;
+        let mode = field.modes.iter().find(|mode| mode.flags == flags)?;
+        Some((field, mode))
+    }
+
+    pub fn write_json(&self, path: &Path) -> anyhow::Result<()> {
+        let encoded = serde_json::to_vec_pretty(self)?;
+        fs::write(path, encoded)
+            .with_context(|| format!("failed to write LIN_PROD gas schedule {}", path.display()))
+    }
+
+    pub fn read_json(path: &Path) -> anyhow::Result<Self> {
+        let raw = fs::read(path)
+            .with_context(|| format!("failed to read LIN_PROD gas schedule {}", path.display()))?;
+        Ok(serde_json::from_slice(&raw)?)
+    }
+}
+
 fn benchmark_mac_field(field_id: u16, benchmark: fn(usize) -> u64) -> ExtfieldMacFieldGasSchedule {
     let samples = EXTFIELD_MAC_CALIBRATION_NS
         .iter()
@@ -203,6 +296,57 @@ fn benchmark_mac_field(field_id: u16, benchmark: fn(usize) -> u64) -> ExtfieldMa
         field_id,
         n_max: EXTFIELD_MAC_N_MAX,
         extfield_mac: ExtfieldMacGasModel { assigned_base_gas, assigned_per_pair_gas, samples },
+    }
+}
+
+fn benchmark_lin_prod_field(
+    field_id: u16,
+    benchmark: fn(u32, usize) -> u64,
+) -> ExtfieldLinProdFieldGasSchedule {
+    let modes = [
+        EXTFIELD_LIN_PROD_FLAG_EXPLICIT,
+        EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA,
+        EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA,
+    ]
+    .iter()
+    .map(|flags| benchmark_lin_prod_mode(*flags, benchmark))
+    .collect::<Vec<_>>();
+    ExtfieldLinProdFieldGasSchedule { field_id, n_max: EXTFIELD_LIN_PROD_N_MAX, modes }
+}
+
+fn benchmark_lin_prod_mode(
+    flags: u32,
+    benchmark: fn(u32, usize) -> u64,
+) -> ExtfieldLinProdGasModel {
+    let samples = EXTFIELD_LIN_PROD_CALIBRATION_NS
+        .iter()
+        .map(|n| {
+            let median_runtime_ns = benchmark(flags, *n);
+            LinProdSizeSample {
+                n: *n,
+                median_runtime_ns,
+                assigned_gas_at_n: assigned_base_gas_from_ns(median_runtime_ns),
+            }
+        })
+        .collect::<Vec<_>>();
+    let measurement_samples = EXTFIELD_LIN_PROD_MEASUREMENT_NS
+        .iter()
+        .map(|n| {
+            let median_runtime_ns = benchmark(flags, *n);
+            LinProdSizeSample {
+                n: *n,
+                median_runtime_ns,
+                assigned_gas_at_n: assigned_base_gas_from_ns(median_runtime_ns),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (assigned_base_gas, assigned_per_term_gas) = fit_lin_prod_gas(&samples);
+    ExtfieldLinProdGasModel {
+        flags,
+        assigned_base_gas,
+        assigned_per_term_gas,
+        samples,
+        measurement_samples,
     }
 }
 
@@ -364,6 +508,86 @@ fn benchmark_mac_ext8_ns(n: usize) -> u64 {
     samples[samples.len() / 2]
 }
 
+fn benchmark_lin_prod_ext5_ns(flags: u32, n: usize) -> u64 {
+    let inputs = random_quintic_pairs((n.max(1) * 2).max(1));
+    let scalars = inputs
+        .iter()
+        .map(|(_, b)| {
+            <QuinticTrinomialExtension as BasedVectorSpace<F>>::as_basis_coefficients_slice(b)[0]
+        })
+        .collect::<Vec<_>>();
+    let mut samples = Vec::with_capacity(BENCH_SAMPLES);
+    let ops_per_sample = lin_prod_ops_per_sample(n);
+
+    for _ in 0..BENCH_SAMPLES {
+        let start = Instant::now();
+        let mut outer_acc = QuinticTrinomialExtension::ZERO;
+        for _ in 0..ops_per_sample {
+            let mut acc = QuinticTrinomialExtension::ONE;
+            for i in 0..n {
+                let (a, b) = inputs[i];
+                let x = inputs[n.max(1) + i].0;
+                let term = match flags {
+                    EXTFIELD_LIN_PROD_FLAG_EXPLICIT => a + b * x,
+                    EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA => {
+                        QuinticTrinomialExtension::ONE + b * x
+                    }
+                    EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA => {
+                        QuinticTrinomialExtension::ONE + x * scalars[i]
+                    }
+                    _ => unreachable!("unsupported LIN_PROD benchmark flags"),
+                };
+                acc *= black_box(term);
+            }
+            outer_acc += black_box(acc);
+        }
+        let _ = black_box(outer_acc);
+        let elapsed = start.elapsed();
+        samples.push(ns_per_ops(elapsed, ops_per_sample));
+    }
+
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+fn benchmark_lin_prod_ext8_ns(flags: u32, n: usize) -> u64 {
+    let inputs = random_octic_pairs((n.max(1) * 2).max(1));
+    let scalars = inputs
+        .iter()
+        .map(|(_, b)| <OcticBinExtension as BasedVectorSpace<F>>::as_basis_coefficients_slice(b)[0])
+        .collect::<Vec<_>>();
+    let mut samples = Vec::with_capacity(BENCH_SAMPLES);
+    let ops_per_sample = lin_prod_ops_per_sample(n);
+
+    for _ in 0..BENCH_SAMPLES {
+        let start = Instant::now();
+        let mut outer_acc = OcticBinExtension::ZERO;
+        for _ in 0..ops_per_sample {
+            let mut acc = OcticBinExtension::ONE;
+            for i in 0..n {
+                let (a, b) = inputs[i];
+                let x = inputs[n.max(1) + i].0;
+                let term = match flags {
+                    EXTFIELD_LIN_PROD_FLAG_EXPLICIT => a + b * x,
+                    EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_EXT_BETA => OcticBinExtension::ONE + b * x,
+                    EXTFIELD_LIN_PROD_FLAG_ALPHA_ONE_BASE_BETA => {
+                        OcticBinExtension::ONE + x * scalars[i]
+                    }
+                    _ => unreachable!("unsupported LIN_PROD benchmark flags"),
+                };
+                acc *= black_box(term);
+            }
+            outer_acc += black_box(acc);
+        }
+        let _ = black_box(outer_acc);
+        let elapsed = start.elapsed();
+        samples.push(ns_per_ops(elapsed, ops_per_sample));
+    }
+
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
 fn fit_mac_gas(samples: &[MacSizeSample]) -> (u64, u64) {
     let count = samples.len() as f64;
     let sum_x = samples.iter().map(|sample| sample.n as f64).sum::<f64>();
@@ -386,7 +610,37 @@ fn fit_mac_gas(samples: &[MacSizeSample]) -> (u64, u64) {
     (base, per_pair)
 }
 
+fn fit_lin_prod_gas(samples: &[LinProdSizeSample]) -> (u64, u64) {
+    let count = samples.len() as f64;
+    let sum_x = samples.iter().map(|sample| sample.n as f64).sum::<f64>();
+    let sum_y = samples.iter().map(|sample| sample.median_runtime_ns as f64).sum::<f64>();
+    let sum_xx = samples
+        .iter()
+        .map(|sample| {
+            let n = sample.n as f64;
+            n * n
+        })
+        .sum::<f64>();
+    let sum_xy =
+        samples.iter().map(|sample| sample.n as f64 * sample.median_runtime_ns as f64).sum::<f64>();
+    let denom = count * sum_xx - sum_x * sum_x;
+    let slope = if denom == 0.0 { 0.0 } else { (count * sum_xy - sum_x * sum_y) / denom };
+    let intercept = (sum_y - slope * sum_x) / count;
+    let gas_per_ns = SAFETY_MULTIPLIER * EIP1108_GAS_PER_MICROSECOND / 1_000.0;
+    let base = ceil_to(intercept.max(0.0) * gas_per_ns, ROUND_TO_GAS).max(ROUND_TO_GAS);
+    let per_term = (slope.max(0.0) * gas_per_ns).ceil().max(1.0) as u64;
+    (base, per_term)
+}
+
 fn ns_per_op(duration: Duration) -> u64 {
-    let nanos = duration.as_nanos() as f64 / OPS_PER_SAMPLE as f64;
+    ns_per_ops(duration, OPS_PER_SAMPLE)
+}
+
+fn ns_per_ops(duration: Duration, ops: usize) -> u64 {
+    let nanos = duration.as_nanos() as f64 / ops as f64;
     nanos.round() as u64
+}
+
+fn lin_prod_ops_per_sample(n: usize) -> usize {
+    (OPS_PER_SAMPLE * 16 / n.max(1)).clamp(8, OPS_PER_SAMPLE)
 }

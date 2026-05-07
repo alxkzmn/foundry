@@ -15,6 +15,9 @@ pub const VECTOR_SEED: u64 = 0xE8C0_5A71_1234_5678;
 pub const DEFAULT_VECTOR_COUNT: usize = 10_000;
 pub const DEFAULT_MAC_VECTOR_REPEATS: usize = 16;
 pub const MAC_VECTOR_LENGTHS: [usize; 4] = [0, 1, 16, 64];
+pub const DEFAULT_LIN_PROD_VECTOR_REPEATS: usize = 8;
+pub const LIN_PROD_VECTOR_LENGTHS: [usize; 7] = [0, 1, 10, 14, 18, 64, 1024];
+pub const LIN_PROD_FLAGS: [u32; 3] = [0, 1, 3];
 
 #[derive(Debug, Clone, Copy)]
 struct XorShift64 {
@@ -84,6 +87,26 @@ pub struct ExtfieldMacVectorFile {
     pub repeats: usize,
     pub lengths: Vec<usize>,
     pub vectors: Vec<ExtfieldMacVector>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdVector {
+    pub field_id: u16,
+    pub flags: u32,
+    pub n: usize,
+    pub packed_alpha: Vec<String>,
+    pub packed_beta: Vec<String>,
+    pub scalars: Vec<String>,
+    pub packed_x: Vec<String>,
+    pub packed_output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtfieldLinProdVectorFile {
+    pub seed: u64,
+    pub repeats: usize,
+    pub lengths: Vec<usize>,
+    pub vectors: Vec<ExtfieldLinProdVector>,
 }
 
 sol! {
@@ -277,6 +300,138 @@ pub fn generate_extfield_mac_ext8_vectors(repeats: usize) -> ExtfieldMacVectorFi
 pub fn write_mac_ext8_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
     let file = generate_extfield_mac_ext8_vectors(repeats);
     let json_path = out_dir.join("extfield_mac_ext8_vectors.json");
+    let encoded = serde_json::to_vec_pretty(&file)?;
+    fs::write(&json_path, encoded)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    Ok(())
+}
+
+pub fn generate_extfield_lin_prod_vectors(repeats: usize) -> ExtfieldLinProdVectorFile {
+    let mut rng = XorShift64::new(VECTOR_SEED ^ 0x1A1E_D017_5EED_0005);
+    let mut vectors =
+        Vec::with_capacity(LIN_PROD_VECTOR_LENGTHS.len() * LIN_PROD_FLAGS.len() * repeats);
+    for n in LIN_PROD_VECTOR_LENGTHS {
+        for flags in LIN_PROD_FLAGS {
+            for _ in 0..repeats {
+                let mut acc = QuinticTrinomialExtension::ONE;
+                let mut packed_alpha = Vec::new();
+                let mut packed_beta = Vec::new();
+                let mut scalars = Vec::new();
+                let mut packed_x = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let x = rng.next_quintic();
+                    match flags {
+                        0 => {
+                            let alpha = rng.next_quintic();
+                            let beta = rng.next_quintic();
+                            acc *= alpha + beta * x;
+                            packed_alpha.push(encode_hex_word(&encode_packed_ext5_word(&alpha)));
+                            packed_beta.push(encode_hex_word(&encode_packed_ext5_word(&beta)));
+                        }
+                        1 => {
+                            let beta = rng.next_quintic();
+                            acc *= QuinticTrinomialExtension::ONE + beta * x;
+                            packed_beta.push(encode_hex_word(&encode_packed_ext5_word(&beta)));
+                        }
+                        3 => {
+                            let beta = rng.next_base_field();
+                            acc *= QuinticTrinomialExtension::ONE + x * beta;
+                            scalars.push(format!("0x{:08x}", beta.as_canonical_u32()));
+                        }
+                        _ => unreachable!("unsupported LIN_PROD vector flags"),
+                    }
+                    packed_x.push(encode_hex_word(&encode_packed_ext5_word(&x)));
+                }
+                vectors.push(ExtfieldLinProdVector {
+                    field_id: 0x0005,
+                    flags,
+                    n,
+                    packed_alpha,
+                    packed_beta,
+                    scalars,
+                    packed_x,
+                    packed_output: encode_hex_word(&encode_packed_ext5_word(&acc)),
+                });
+            }
+        }
+    }
+    ExtfieldLinProdVectorFile {
+        seed: VECTOR_SEED,
+        repeats,
+        lengths: LIN_PROD_VECTOR_LENGTHS.to_vec(),
+        vectors,
+    }
+}
+
+pub fn generate_extfield_lin_prod_ext8_vectors(repeats: usize) -> ExtfieldLinProdVectorFile {
+    let mut rng = XorShift64::new(VECTOR_SEED ^ 0x1A1E_D017_5EED_0008);
+    let mut vectors =
+        Vec::with_capacity(LIN_PROD_VECTOR_LENGTHS.len() * LIN_PROD_FLAGS.len() * repeats);
+    for n in LIN_PROD_VECTOR_LENGTHS {
+        for flags in LIN_PROD_FLAGS {
+            for _ in 0..repeats {
+                let mut acc = OcticBinExtension::ONE;
+                let mut packed_alpha = Vec::new();
+                let mut packed_beta = Vec::new();
+                let mut scalars = Vec::new();
+                let mut packed_x = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let x = rng.next_octic();
+                    match flags {
+                        0 => {
+                            let alpha = rng.next_octic();
+                            let beta = rng.next_octic();
+                            acc *= alpha + beta * x;
+                            packed_alpha.push(encode_hex_word(&encode_packed_ext8_word(&alpha)));
+                            packed_beta.push(encode_hex_word(&encode_packed_ext8_word(&beta)));
+                        }
+                        1 => {
+                            let beta = rng.next_octic();
+                            acc *= OcticBinExtension::ONE + beta * x;
+                            packed_beta.push(encode_hex_word(&encode_packed_ext8_word(&beta)));
+                        }
+                        3 => {
+                            let beta = rng.next_base_field();
+                            acc *= OcticBinExtension::ONE + x * beta;
+                            scalars.push(format!("0x{:08x}", beta.as_canonical_u32()));
+                        }
+                        _ => unreachable!("unsupported LIN_PROD vector flags"),
+                    }
+                    packed_x.push(encode_hex_word(&encode_packed_ext8_word(&x)));
+                }
+                vectors.push(ExtfieldLinProdVector {
+                    field_id: 0x0008,
+                    flags,
+                    n,
+                    packed_alpha,
+                    packed_beta,
+                    scalars,
+                    packed_x,
+                    packed_output: encode_hex_word(&encode_packed_ext8_word(&acc)),
+                });
+            }
+        }
+    }
+    ExtfieldLinProdVectorFile {
+        seed: VECTOR_SEED,
+        repeats,
+        lengths: LIN_PROD_VECTOR_LENGTHS.to_vec(),
+        vectors,
+    }
+}
+
+pub fn write_lin_prod_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
+    let file = generate_extfield_lin_prod_vectors(repeats);
+    let json_path = out_dir.join("extfield_lin_prod_vectors.json");
+    let encoded = serde_json::to_vec_pretty(&file)?;
+    fs::write(&json_path, encoded)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    Ok(())
+}
+
+pub fn write_lin_prod_ext8_vector_outputs(out_dir: &Path, repeats: usize) -> anyhow::Result<()> {
+    let file = generate_extfield_lin_prod_ext8_vectors(repeats);
+    let json_path = out_dir.join("extfield_lin_prod_ext8_vectors.json");
     let encoded = serde_json::to_vec_pretty(&file)?;
     fs::write(&json_path, encoded)
         .with_context(|| format!("failed to write {}", json_path.display()))?;

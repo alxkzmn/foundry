@@ -2,9 +2,10 @@ use std::{env, path::PathBuf};
 
 use anvil::NodeConfig;
 use ext8_precompile_runner::{
-    gas_model::{ExtfieldMacGasSchedule, LockedGasSchedule},
+    gas_model::{ExtfieldLinProdGasSchedule, ExtfieldMacGasSchedule, LockedGasSchedule},
     precompiles::{
-        install_locked_gas_schedule, install_locked_mac_gas_schedule, Ext8PrecompileFactory,
+        install_locked_gas_schedule, install_locked_lin_prod_gas_schedule,
+        install_locked_mac_gas_schedule, Ext8PrecompileFactory,
     },
 };
 
@@ -16,16 +17,20 @@ async fn main() -> anyhow::Result<()> {
     });
     let mut mac_gas_schedule_path =
         PathBuf::from("sol-spartan-whir/testdata/extfield_mac_gas_schedule.json");
+    let mut lin_prod_gas_schedule_path =
+        PathBuf::from("sol-spartan-whir/testdata/extfield_lin_prod_gas_schedule.json");
     let mut port = 18547;
-    if let Some(second) = args.next() {
-        match second.parse::<u16>() {
+    for arg in args {
+        match arg.parse::<u16>() {
             Ok(parsed_port) => {
                 port = parsed_port;
             }
             Err(_) => {
-                mac_gas_schedule_path = PathBuf::from(second);
-                if let Some(third) = args.next() {
-                    port = third.parse::<u16>()?;
+                let path = PathBuf::from(&arg);
+                if arg.contains("lin_prod") {
+                    lin_prod_gas_schedule_path = path;
+                } else {
+                    mac_gas_schedule_path = path;
                 }
             }
         }
@@ -33,12 +38,15 @@ async fn main() -> anyhow::Result<()> {
 
     let schedule = LockedGasSchedule::read_json(&gas_schedule_path)?;
     let mac_schedule = ExtfieldMacGasSchedule::read_json(&mac_gas_schedule_path)?;
+    let lin_prod_schedule = ExtfieldLinProdGasSchedule::read_json(&lin_prod_gas_schedule_path)?;
     install_locked_gas_schedule(schedule.clone())?;
     install_locked_mac_gas_schedule(mac_schedule.clone())?;
+    install_locked_lin_prod_gas_schedule(lin_prod_schedule.clone())?;
 
     println!("starting custom anvil node with ext8 precompiles");
     println!("gas schedule: {}", gas_schedule_path.display());
     println!("MAC gas schedule: {}", mac_gas_schedule_path.display());
+    println!("LIN_PROD gas schedule: {}", lin_prod_gas_schedule_path.display());
     println!("port: {}", port);
     println!("ext8_mul assigned base gas: {}", schedule.ext8_mul.assigned_base_gas);
     println!("ext8_square assigned base gas: {}", schedule.ext8_square.assigned_base_gas);
@@ -49,6 +57,14 @@ async fn main() -> anyhow::Result<()> {
             field.extfield_mac.assigned_base_gas,
             field.extfield_mac.assigned_per_pair_gas
         );
+    }
+    for field in &lin_prod_schedule.fields {
+        for mode in &field.modes {
+            println!(
+                "extfield_lin_prod field_id={} flags={} assigned gas: base={} per_term={}",
+                field.field_id, mode.flags, mode.assigned_base_gas, mode.assigned_per_term_gas
+            );
+        }
     }
 
     let config = NodeConfig::default()
